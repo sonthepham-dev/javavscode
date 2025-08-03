@@ -15,6 +15,28 @@
 				"kind": "build",
 				"isDefault": true
 			}
+		},
+		{
+			"label": "compile-unbundled",
+			"type": "shell",
+			"command": "npm",
+			"args": ["run", "compile-unbundled"],
+			"group": "build",
+			"presentation": {
+				"reveal": "silent"
+			},
+			"problemMatcher": "$tsc"
+		},
+		{
+			"label": "compile-debug",
+			"type": "shell",
+			"command": "npm",
+			"args": ["run", "compile-debug"],
+			"group": "build",
+			"presentation": {
+				"reveal": "silent"
+			},
+			"problemMatcher": "$tsc"
 		}
 	]
 }

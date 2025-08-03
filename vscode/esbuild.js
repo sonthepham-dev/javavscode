@@ -14,6 +14,18 @@ const scriptConfig = {
   format: "esm"
 };
 
+// Configuration for debugging - no bundling, better source maps
+const debugConfig = {
+  bundle: false,
+  minify: false,
+  sourcemap: true,
+  target: "es2020",
+  format: "esm",
+  outdir: "out",
+  entryPoints: ["src/extension.ts"],
+  external: ["vscode"]
+};
+
 const watchConfig = {
     watch: {
       onRebuild(error, result) {
@@ -54,6 +66,11 @@ const checkAritfactoryUrl = () => {
           ...watchConfig,
         });
         console.log("[watch] build finished");
+      } else if(args.includes("--debug")) {
+        // Build for debugging - no bundling
+        console.log("[debug] build started");
+        await build(debugConfig);
+        console.log("[debug] build finished");
       } else if(args.includes("--artifactory-check")){
         checkAritfactoryUrl();
       } else {
