@@ -1,0 +1,148 @@
+diff --git a/java/java.lsp.server/src/org/netbeans/modules/java/lsp/server/URITranslator.java b/java/java.lsp.server/src/org/netbeans/modules/java/lsp/server/URITranslator.java
+index be6e14c1cc..5a5b014911 100644
+--- a/java/java.lsp.server/src/org/netbeans/modules/java/lsp/server/URITranslator.java
++++ b/java/java.lsp.server/src/org/netbeans/modules/java/lsp/server/URITranslator.java
+@@ -44,14 +44,26 @@ public final class URITranslator {
+ 
+     private static final URITranslator INSTANCE = new URITranslator();
+ 
+-    private final Map<String, String> uriFromCacheMap = new LRUCacheMap();
++    private static final int MAX_CACHE_SIZE = 2048;
++
++    private final Map<String, String> lspToNbUriMap = new LRUCacheMap();
++    private final Map<String, String> uriFromCacheMap = new LinkedHashMap<String, String>(32, 0.75f, true) {
++        @Override
++        protected boolean removeEldestEntry(Map.Entry<String, String> eldest) {
++            if (size() > MAX_CACHE_SIZE) {
++                lspToNbUriMap.remove(eldest.getValue());
++                return true;
++            }
++            return false;
++        }
++    };
+ 
+     public static URITranslator getDefault() {
+         return INSTANCE;
+     }
+ 
+-    public synchronized String uriToLSP(String lspUri) {
+-        return uriFromCacheMap.computeIfAbsent(lspUri, uri -> {
++    public synchronized String uriToLSP(String nbUri) {
++        return uriFromCacheMap.computeIfAbsent(nbUri, uri -> {
+             URI uriUri = URI.create(uri);
+             URL url;
+             try {
+@@ -95,36 +107,43 @@ public final class URITranslator {
+                     uri = "file://" + uri.substring(5); // NOI18N
+                 }
+             }
++            if (!uri.equals(nbUri)) {
++                lspToNbUriMap.put(uri, nbUri);
++            }
+             return uri;
+         });
+     }
+ 
+-    public String uriFromLSP(String nbUri) {
++    public synchronized String uriFromLSP(String lspUri) {
++        String nbUri = lspToNbUriMap.get(lspUri);
++        if (nbUri != null) {
++            return nbUri;
++        }
+         // handle special cases. We use file:jar:.....!/ and nbjrt:file:..../!/ but vscode url-encodes that, but wrongly, as it leaves other URI-encoded
+         // special characters as they are. However doing a full decode using Decoder will damage other URL-encoded special characters that would be
+         // parsed by URI.create() later.
+         // So handle the special cases manually and only remove the vscode-added scheme/delimiter encoded chars
+-        int slash = nbUri.indexOf('/'); // NOI18N
++        int slash = lspUri.indexOf('/'); // NOI18N
+         if (slash != -1) {
+-            int indexOfInnerScheme = nbUri.substring(0, slash).indexOf("%3A"); // NOI18N
++            int indexOfInnerScheme = lspUri.substring(0, slash).indexOf("%3A"); // NOI18N
+             if (indexOfInnerScheme > 0 && indexOfInnerScheme < slash) {
+                 int n = indexOfInnerScheme + 3;
+                 StringBuilder sb = new StringBuilder();
+-                sb.append(nbUri, 0, indexOfInnerScheme);
++                sb.append(lspUri, 0, indexOfInnerScheme);
+                 sb.append(':'); // NOI18N
+                 
+                 // now search for the mangled !
+-                int mangledExclamation = nbUri.indexOf("%21/"); // NOI18N
++                int mangledExclamation = lspUri.indexOf("%21/"); // NOI18N
+                 if (mangledExclamation > 0) {
+-                    sb.append(nbUri, n, mangledExclamation);
++                    sb.append(lspUri, n, mangledExclamation);
+                     sb.append('!'); // NOI18N
+                     n = mangledExclamation + 3;
+                 }
+-                sb.append(nbUri, n, nbUri.length());
++                sb.append(lspUri, n, lspUri.length());
+                 return sb.toString();
+             }
+         }
+-        return nbUri;
++        return lspUri;
+     }
+ 
+     /**
+diff --git a/java/java.lsp.server/src/org/netbeans/modules/java/lsp/server/Utils.java b/java/java.lsp.server/src/org/netbeans/modules/java/lsp/server/Utils.java
+index ec8f1da462..c1346abdee 100644
+--- a/java/java.lsp.server/src/org/netbeans/modules/java/lsp/server/Utils.java
++++ b/java/java.lsp.server/src/org/netbeans/modules/java/lsp/server/Utils.java
+@@ -359,6 +359,9 @@ public class Utils {
+     }
+ 
+     public static synchronized String toUri(FileObject file) {
++        if (file == null) {
++            return null;
++        }
+         return URITranslator.getDefault().uriToLSP(file.toURI().toString());
+     }
+ 
+diff --git a/java/java.lsp.server/src/org/netbeans/modules/java/lsp/server/protocol/TextDocumentServiceImpl.java b/java/java.lsp.server/src/org/netbeans/modules/java/lsp/server/protocol/TextDocumentServiceImpl.java
+index ff0674ec35..08d4137565 100644
+--- a/java/java.lsp.server/src/org/netbeans/modules/java/lsp/server/protocol/TextDocumentServiceImpl.java
++++ b/java/java.lsp.server/src/org/netbeans/modules/java/lsp/server/protocol/TextDocumentServiceImpl.java
+@@ -1294,7 +1294,14 @@ public class TextDocumentServiceImpl implements TextDocumentService, LanguageCli
+             if (source == null) {
+                 return CompletableFuture.completedFuture(Collections.emptyList());
+             }
+-            String uri = Utils.toUri(source.getFileObject());
++            FileObject sourceFile = source.getFileObject();
++            if (sourceFile == null) {
++                return CompletableFuture.completedFuture(Collections.emptyList());
++            }
++            String uri = Utils.toUri(sourceFile);
++            if (uri == null) {
++                return CompletableFuture.completedFuture(Collections.emptyList());
++            }
+             CompletableFuture<List<? extends org.netbeans.api.lsp.CodeLens>> result = new CompletableFuture<>();
+             try {
+                 ParserManager.parseWhenScanFinished(Collections.singleton(source), new UserTask() {
+diff --git a/java/java.lsp.server/test/unit/src/org/netbeans/modules/java/lsp/server/UtilsTest.java b/java/java.lsp.server/test/unit/src/org/netbeans/modules/java/lsp/server/UtilsTest.java
+index 81cb2673b7..49e155f310 100644
+--- a/java/java.lsp.server/test/unit/src/org/netbeans/modules/java/lsp/server/UtilsTest.java
++++ b/java/java.lsp.server/test/unit/src/org/netbeans/modules/java/lsp/server/UtilsTest.java
+@@ -123,6 +123,23 @@ public class UtilsTest {
+         assertSame(fo, Utils.fromUri(replaced));
+     }
+ 
++    /**
++     * Checks that URIs translated for LSP clients can be translated back for debugger breakpoints.
++     * @throws Exception
++     */
++    @Test
++    public void testUriRoundTripForArchiveSources() throws Exception {
++        FileObject fo = JavaPlatform.getDefault().getSourceFolders().findResource("java/util/Collections.java");
++        String nbUri = fo.toURI().toString();
++        String lspUri = URITranslator.getDefault().uriToLSP(nbUri);
++        assertEquals(nbUri, URITranslator.getDefault().uriFromLSP(lspUri));
++    }
++
++    @Test
++    public void testToUriNullFileObject() {
++        assertEquals(null, Utils.toUri(null));
++    }
++
+     /**
+      * Checks that mangled URI pointing into a JDK11 module is properly interpreted from LSP.
+      * @throws Exception 
